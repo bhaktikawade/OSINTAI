@@ -39,24 +39,48 @@ def extract_intel_from_text(text: str):
 class OSINTBrowser:
     def __init__(self, proxy=None):
         self.cleanup()
+        
+        # Ensure Playwright browser is installed once per session
+        if "playwright_installed" not in st.session_state:
+            with st.spinner("Initializing browser environment..."):
+                try:
+                    import subprocess
+                    # Install only chromium to save space and time
+                    subprocess.run(["playwright", "install", "chromium"], check=True)
+                    st.session_state.playwright_installed = True
+                except Exception as e:
+                    st.error(f"Browser installation failed: {str(e)}")
+
         try:
-            import subprocess
-            subprocess.run(["playwright", "install", "chromium"], check=True)
-        except: pass
+            self.pw = sync_playwright().start()
+            
+            # Heavy-duty flags for restricted container environments (Fix for TargetClosedError)
+            launch_args = [
+                "--no-sandbox", 
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+                "--disable-setuid-sandbox",
+                "--no-first-run",
+                "--no-zygote",
+                "--single-process", # Critical for some low-RAM environments
+                "--disable-extensions"
+            ]
+            
+            browser_config = {"headless": True, "args": launch_args}
+            if proxy: browser_config["proxy"] = {"server": proxy}
 
-        self.pw = sync_playwright().start()
-        launch_args = ["--no-sandbox", "--disable-dev-shm-usage"]
-        browser_config = {"headless": True, "args": launch_args}
-        if proxy: browser_config["proxy"] = {"server": proxy}
-
-        self.browser = self.pw.chromium.launch(**browser_config)
-        self.context = self.browser.new_context(
-            viewport={"width": 1280, "height": 720},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
-        )
-        self.page = self.context.new_page()
-        if STEALTH_AVAILABLE: stealth_sync(self.page)
-        st.session_state.osint_browser_obj = self
+            self.browser = self.pw.chromium.launch(**browser_config)
+            self.context = self.browser.new_context(
+                viewport={"width": 1280, "height": 720},
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
+            )
+            self.page = self.context.new_page()
+            if STEALTH_AVAILABLE: stealth_sync(self.page)
+            st.session_state.osint_browser_obj = self
+        except Exception as e:
+            st.error(f"CRITICAL: Browser Launch Failed. {str(e)}")
+            st.info("Tip: Try clicking 'Reset Session' in the sidebar or check if the app has run out of RAM.")
+            raise e
 
     def navigate(self, url: str):
         try:
