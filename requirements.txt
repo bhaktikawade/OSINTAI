@@ -1,0 +1,9 @@
+langchain
+langchain-google-genai
+langgraph
+streamlit
+duckduckgo-search
+easyocr
+beautifulsoup4
+pillow
+requests
