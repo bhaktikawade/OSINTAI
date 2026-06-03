@@ -49,17 +49,34 @@ class OSINTBrowser:
             with st.status("🛠️ Setting up Browser Environment (First run only)...", expanded=True) as status:
                 try:
                     import subprocess
+                    import sys
                     status.write("Installing Chromium binaries...")
-                    # Ensure playwright is installed before running install chromium
-                    # Sometimes the PATH isn't updated immediately
-                    subprocess.run(["python", "-m", "playwright", "install", "chromium"], check=True)
-                    st.session_state.pw_ready = True
-                    status.update(label="✅ Browser Environment Ready!", state="complete", expanded=False)
+                    
+                    # Use sys.executable to ensure we use the correct environment
+                    # Add --with-deps just in case packages.txt missed something minor
+                    cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+                    
+                    process = subprocess.run(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True
+                    )
+                    
+                    if process.returncode == 0:
+                        st.session_state.pw_ready = True
+                        status.update(label="✅ Browser Environment Ready!", state="complete", expanded=False)
+                    else:
+                        error_detail = process.stderr or process.stdout
+                        status.error(f"❌ Installation Failed (Exit {process.returncode})")
+                        st.code(error_detail)
+                        st.info("Attempting fallback: Try clicking 'Reset Browser' in the sidebar.")
+                        st.session_state.pop("pw_ready", None)
+                        return
                 except Exception as e:
-                    status.error(f"❌ Failed to install browser: {e}")
-                    # Allow a retry next time instead of being stuck
+                    status.error(f"❌ Critical Setup Error: {e}")
                     st.session_state.pop("pw_ready", None)
-                    return # Exit early so we don't try to launch
+                    return
 
         try:
             self.pw = sync_playwright().start()
