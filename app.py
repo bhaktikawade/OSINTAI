@@ -8,7 +8,11 @@ from typing import Annotated, List, TypedDict, Union
 from PIL import Image
 from duckduckgo_search import DDGS
 from playwright.sync_api import sync_playwright
-from playwright_stealth import stealth_sync
+try:
+    from playwright_stealth import stealth_sync
+    STEALTH_AVAILABLE = True
+except ImportError:
+    STEALTH_AVAILABLE = False
 
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, ToolMessage
@@ -22,6 +26,14 @@ from langgraph.prebuilt import ToolNode
 class OSINTBrowser:
     def __init__(self, proxy=None):
         self.cleanup() # Ensure no zombies from previous attempts
+        
+        # Ensure Playwright browser is installed (Fix for Streamlit Cloud)
+        try:
+            import subprocess
+            subprocess.run(["playwright", "install", "chromium"], check=True)
+        except Exception as e:
+            st.warning(f"Browser installation check skipped/failed: {e}")
+
         self.pw = sync_playwright().start()
         
         # Proxy configuration (Fix #1)
@@ -36,7 +48,10 @@ class OSINTBrowser:
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36"
         )
         self.page = self.context.new_page()
-        stealth_sync(self.page)
+        
+        if STEALTH_AVAILABLE:
+            stealth_sync(self.page)
+        
         st.session_state.osint_browser_obj = self # Store for cleanup
 
     def navigate(self, url: str):
