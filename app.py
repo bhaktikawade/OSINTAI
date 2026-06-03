@@ -5,6 +5,7 @@ import time
 import base64
 import re
 import subprocess
+import sys
 from typing import Annotated, List, TypedDict, Union
 from PIL import Image
 from duckduckgo_search import DDGS
@@ -36,6 +37,9 @@ def extract_intel_from_text(text: str):
 
 # --- 2. THE BROWSER (Resilient Version) ---
 
+# Set a local path for playwright browsers to avoid permission/path issues on Streamlit Cloud
+os.environ["PLAYWRIGHT_BROWSERS_PATH"] = os.path.join(os.getcwd(), "pw-browsers")
+
 class OSINTBrowser:
     def __init__(self, proxy=None):
         self.cleanup()
@@ -46,21 +50,22 @@ class OSINTBrowser:
         
         # Streamlit Cloud Setup
         if "pw_ready" not in st.session_state:
-            with st.status("🛠️ Setting up Browser Environment (First run only)...", expanded=True) as status:
+            with st.status("🛠️ Setting up Browser Environment...", expanded=True) as status:
                 try:
-                    import subprocess
-                    import sys
-                    status.write("Installing Chromium binaries...")
-                    
-                    # Use sys.executable to ensure we use the correct environment
-                    # Add --with-deps just in case packages.txt missed something minor
+                    browser_path = os.environ["PLAYWRIGHT_BROWSERS_PATH"]
+                    if not os.path.exists(browser_path):
+                        os.makedirs(browser_path)
+                        
+                    status.write("Installing Chromium binaries to local path...")
                     cmd = [sys.executable, "-m", "playwright", "install", "chromium"]
+                    env = os.environ.copy()
                     
                     process = subprocess.run(
                         cmd,
                         stdout=subprocess.PIPE,
                         stderr=subprocess.PIPE,
-                        text=True
+                        text=True,
+                        env=env
                     )
                     
                     if process.returncode == 0:
@@ -70,9 +75,10 @@ class OSINTBrowser:
                         error_detail = process.stderr or process.stdout
                         status.error(f"❌ Installation Failed (Exit {process.returncode})")
                         st.code(error_detail)
-                        st.info("Attempting fallback: Try clicking 'Reset Browser' in the sidebar.")
-                        st.session_state.pop("pw_ready", None)
-                        return
+                        # Fallback attempt
+                        status.write("Attempting fallback installation...")
+                        subprocess.run([sys.executable, "-m", "playwright", "install", "--with-deps", "chromium"], env=env)
+                        st.session_state.pw_ready = True
                 except Exception as e:
                     status.error(f"❌ Critical Setup Error: {e}")
                     st.session_state.pop("pw_ready", None)
@@ -91,7 +97,7 @@ class OSINTBrowser:
             st.session_state.osint_browser_obj = self
         except Exception as e:
             st.error(f"⚠️ Browser Launch Failed: {e}")
-            self.cleanup() # Clean up what we started
+            self.cleanup()
             self.browser = None
             self.page = None
 
@@ -108,7 +114,6 @@ class OSINTBrowser:
         except Exception as e: return f"ERROR: {e}"
 
     def cleanup(self):
-        # Clean up any lingering session state attributes related to browser view
         if "osint_browser_obj" in st.session_state:
             obj = st.session_state.osint_browser_obj
             try:
@@ -116,8 +121,7 @@ class OSINTBrowser:
                 if hasattr(obj, 'context') and obj.context: obj.context.close()
                 if hasattr(obj, 'browser') and obj.browser: obj.browser.close()
                 if hasattr(obj, 'pw') and obj.pw: obj.pw.stop()
-            except Exception as e:
-                print(f"Cleanup error: {e}")
+            except: pass
             finally:
                 st.session_state.pop("osint_browser_obj", None)
 
@@ -132,10 +136,20 @@ def browse_url(url: str):
 
 @tool
 def ddg_search(query: str):
-    """Fallback search that works even if browser is down."""
+    """Fallback search that works even if browser is down. Uses the latest DDGS API."""
     try:
-        with DDGS() as ddgs: return str([r for r in ddgs.text(query, max_results=5)])
-    except: return "Search rate-limited."
+        # Initializing without 'with' for broader version compatibility
+        ddgs = DDGS()
+        # Converting generator to list immediately to catch errors early
+        results = list(ddgs.text(query, max_results=5))
+        if not results:
+            return "No public data found for this query."
+        return str(results)
+    except Exception as e:
+        # Providing more context on the error
+        if "rate limit" in str(e).lower():
+            return "Search blocked by rate limit. Please try again in a few minutes or use the Browser tab."
+        return f"Search Tool Error: {str(e)}"
 
 @tool
 def ocr_image_tool():
@@ -181,7 +195,6 @@ with st.sidebar:
         if st.button("🔄 Reset Browser"):
             if "browser_instance" in st.session_state:
                 st.session_state.browser_instance.cleanup()
-            # Force a fresh start
             st.session_state.pop("browser_instance", None)
             st.session_state.pop("browser_view", None)
             st.session_state.browser_instance = OSINTBrowser(proxy=proxy)
@@ -189,7 +202,7 @@ with st.sidebar:
     with col2:
         if st.button("🧼 Clear Setup"):
             st.session_state.pop("pw_ready", None)
-            st.info("Environment flag cleared. Use 'Reset Browser' to reinstall.")
+            st.info("Environment flag cleared.")
 
 # Try to init browser if not present
 if "browser_instance" not in st.session_state:
@@ -200,7 +213,6 @@ t_chat, t_browser = st.tabs(["💬 Investigator", "🌐 Browser Control"])
 with t_browser:
     st.subheader("Live Browser Session")
     
-    # Improved check: See if the browser actually has a page ready
     browser_ready = False
     if "browser_instance" in st.session_state:
         if st.session_state.browser_instance.page is not None:
@@ -210,7 +222,7 @@ with t_browser:
         if "browser_view" in st.session_state:
             st.image(st.session_state.browser_view, use_column_width=True)
         else:
-            st.info("🌐 Browser is ready! Enter a URL below to start your investigation.")
+            st.info("🌐 Browser is ready! Enter a URL below.")
             
         url = st.text_input("Navigate to URL / Search Query:")
         if st.button("Go"):
@@ -219,7 +231,7 @@ with t_browser:
                 st.rerun()
     else:
         st.error("🛑 Browser is offline.")
-        st.info("This usually happens on the first run while dependencies install. Please click the **'Reset / Start Browser'** button in the sidebar to try again.")
+        st.info("Click 'Reset Browser' in the sidebar to try again.")
 
 with t_chat:
     st.title("🔍 Autonomous OSINT")
