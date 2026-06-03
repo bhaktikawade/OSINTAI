@@ -3,7 +3,8 @@ langchain-google-genai
 langgraph
 streamlit
 duckduckgo-search
-easyocr
+playwright
+playwright-stealth
 beautifulsoup4
 pillow
-requests
+python-dotenv
