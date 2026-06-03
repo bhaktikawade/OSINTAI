@@ -42,6 +42,7 @@ class OSINTBrowser:
         self.browser = None
         self.pw = None
         self.page = None
+        self.context = None
         
         # Streamlit Cloud Setup
         if "pw_ready" not in st.session_state:
@@ -49,12 +50,16 @@ class OSINTBrowser:
                 try:
                     import subprocess
                     status.write("Installing Chromium binaries...")
-                    subprocess.run(["playwright", "install", "chromium"], check=True)
+                    # Ensure playwright is installed before running install chromium
+                    # Sometimes the PATH isn't updated immediately
+                    subprocess.run(["python", "-m", "playwright", "install", "chromium"], check=True)
                     st.session_state.pw_ready = True
                     status.update(label="✅ Browser Environment Ready!", state="complete", expanded=False)
                 except Exception as e:
                     status.error(f"❌ Failed to install browser: {e}")
-                    st.info("The app will continue in 'Manual Search' mode.")
+                    # Allow a retry next time instead of being stuck
+                    st.session_state.pop("pw_ready", None)
+                    return # Exit early so we don't try to launch
 
         try:
             self.pw = sync_playwright().start()
@@ -69,7 +74,9 @@ class OSINTBrowser:
             st.session_state.osint_browser_obj = self
         except Exception as e:
             st.error(f"⚠️ Browser Launch Failed: {e}")
+            self.cleanup() # Clean up what we started
             self.browser = None
+            self.page = None
 
     def navigate(self, url: str):
         if not self.page: return "ERROR: Browser not initialized."
@@ -84,11 +91,18 @@ class OSINTBrowser:
         except Exception as e: return f"ERROR: {e}"
 
     def cleanup(self):
+        # Clean up any lingering session state attributes related to browser view
         if "osint_browser_obj" in st.session_state:
+            obj = st.session_state.osint_browser_obj
             try:
-                st.session_state.osint_browser_obj.browser.close()
-                st.session_state.osint_browser_obj.pw.stop()
-            except: pass
+                if hasattr(obj, 'page') and obj.page: obj.page.close()
+                if hasattr(obj, 'context') and obj.context: obj.context.close()
+                if hasattr(obj, 'browser') and obj.browser: obj.browser.close()
+                if hasattr(obj, 'pw') and obj.pw: obj.pw.stop()
+            except Exception as e:
+                print(f"Cleanup error: {e}")
+            finally:
+                st.session_state.pop("osint_browser_obj", None)
 
 # --- 3. TOOLS & AGENT ---
 
@@ -144,9 +158,21 @@ with st.sidebar:
     st.title("Settings")
     key = st.text_input("Gemini API Key", type="password")
     proxy = st.text_input("Proxy Server (Optional)")
-    if st.button("🔄 Reset / Start Browser"):
-        st.session_state.browser_instance = OSINTBrowser(proxy=proxy)
-        st.rerun()
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        if st.button("🔄 Reset Browser"):
+            if "browser_instance" in st.session_state:
+                st.session_state.browser_instance.cleanup()
+            # Force a fresh start
+            st.session_state.pop("browser_instance", None)
+            st.session_state.pop("browser_view", None)
+            st.session_state.browser_instance = OSINTBrowser(proxy=proxy)
+            st.rerun()
+    with col2:
+        if st.button("🧼 Clear Setup"):
+            st.session_state.pop("pw_ready", None)
+            st.info("Environment flag cleared. Use 'Reset Browser' to reinstall.")
 
 # Try to init browser if not present
 if "browser_instance" not in st.session_state:
@@ -156,14 +182,27 @@ t_chat, t_browser = st.tabs(["💬 Investigator", "🌐 Browser Control"])
 
 with t_browser:
     st.subheader("Live Browser Session")
-    if "browser_view" in st.session_state:
-        st.image(st.session_state.browser_view, use_column_width=True)
-        url = st.text_input("Navigate to URL:")
+    
+    # Improved check: See if the browser actually has a page ready
+    browser_ready = False
+    if "browser_instance" in st.session_state:
+        if st.session_state.browser_instance.page is not None:
+            browser_ready = True
+            
+    if browser_ready:
+        if "browser_view" in st.session_state:
+            st.image(st.session_state.browser_view, use_column_width=True)
+        else:
+            st.info("🌐 Browser is ready! Enter a URL below to start your investigation.")
+            
+        url = st.text_input("Navigate to URL / Search Query:")
         if st.button("Go"):
-            st.session_state.browser_instance.navigate(url)
-            st.rerun()
+            with st.spinner("Navigating..."):
+                st.session_state.browser_instance.navigate(url)
+                st.rerun()
     else:
-        st.warning("Browser is currently offline or failed to launch. Use 'Reset' in sidebar to try again.")
+        st.error("🛑 Browser is offline.")
+        st.info("This usually happens on the first run while dependencies install. Please click the **'Reset / Start Browser'** button in the sidebar to try again.")
 
 with t_chat:
     st.title("🔍 Autonomous OSINT")
